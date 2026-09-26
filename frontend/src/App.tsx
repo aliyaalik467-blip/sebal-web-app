@@ -101,7 +101,7 @@ export default function App(){
  }
  async function run(){
   try{
-   if(!projectId||!files?.length||!cold||!hot)throw new Error('Upload data and select both cold and hot pixels.')
+   if(!projectId||!cold||!hot)throw new Error('Prepare a Landsat scene and select both cold and hot pixels.')
    if(!ws||!etoi||!eto)throw new Error('Enter all three weather parameters.')
    if(!prepareStatus)throw new Error('Select a Landsat scene and prepare the SEBAL inputs first.')
    setError('');setStatus('Saving configuration…')
