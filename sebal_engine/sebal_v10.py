@@ -19,14 +19,14 @@ from grass.script import core as gcore
 # ------------------------------------------------------------
 # edit here
 # ------------------------------------------------------------
-gisbase = '/usr/lib/grass78'
-gisdb = '/home/rafatieppo/grassdata'
-location = 'epsg31981'
-mapset = 'PERMANENT'
+gisbase = os.environ.get('GISBASE', '/usr/lib/grass78')
+gisdb = os.environ.get('GISDB', '/grassdata')
+location = os.environ.get('GRASS_LOCATION', 'sebal')
+mapset = os.environ.get('GRASS_MAPSET', 'PERMANENT')
 
 # Finding files and assign local variables
 # path = "/media/rafatieppo/SSD_24gb/QGIS_SEBAL/20170904"
-path = '/media/rafatieppo/hd_back/sebal_tutorial/'
+path = os.environ.get('SEBAL_INPUT_DIR', os.getcwd())
 # -------------- edition ends here ---------------------------
 
 # ------------------------------------------------------------
@@ -63,17 +63,17 @@ print("We found \n", len(mtlfile), " .mtl file(s) \n",
 print("------------------------------------------------------------")
 
 print("------------------------------------------------------------")
-WS_2m = float(input(
+WS_2m = float(os.environ.get('WS_2M', input(
     "Please type the wind speed value in the weather station (height of the 2 m (m/s) : "))
 print("------------------------------------------------------------")
 
 print("------------------------------------------------------------")
-EToi = float(input(
+EToi = float(os.environ.get('ETO_INSTANT', input(
     "Please type the instantaneous value of reference evapotranspiration (EToi) in the weather station (time of the satellite overpass (mm) : "))
 print("------------------------------------------------------------")
 
 print("------------------------------------------------------------")
-ETo = float(input(
+ETo = float(os.environ.get('ETO_DAILY', input(
     "Please type the daily value of reference evapotranspiration (ETo) from the weather station (mm): "))
 print("------------------------------------------------------------")
 
@@ -339,7 +339,7 @@ print('It is done')
 print("------------------------------------------------------------")
 
 print('Choose the cold pixel coordinates in irrigation areas.')
-COLDPIX_XY = str(input('Type the coordinates (East,North): ')).strip('()')
+COLDPIX_XY = os.environ.get('COLDPIX_XY', str(input('Type the coordinates (East,North): ')).strip('()'))
 print('Coordinates', COLDPIX_XY)
 
 print('Getting cold pixel value for coordinates')
@@ -436,7 +436,7 @@ print('It is done')
 print("------------------------------------------------------------")
 
 print('Choose the hot pixel coordinates in naked areas.')
-HOTPIX_XY = str(input('Type the coordinates (East,North): ')).strip('()')
+HOTPIX_XY = os.environ.get('HOTPIX_XY', str(input('Type the coordinates (East,North): ')).strip('()'))
 print('Coordinates', HOTPIX_XY)
 print('Getting hot pixel value for coordinates')
 HOTPIX_TSz = gscript.parse_command('r.what', map='TS', coordinates=HOTPIX_XY)
