@@ -1,12 +1,15 @@
 from pathlib import Path
 import io
 import json
+import os
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 
+import ee
 import rasterio
 import shapefile
+from google.oauth2 import service_account
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.responses import FileResponse
 from pyproj import CRS, Transformer
@@ -23,6 +26,24 @@ ROOT.mkdir(parents=True, exist_ok=True)
 
 def project(pid: str) -> Path:
     return ROOT / pid
+
+
+def initialize_earth_engine():
+    project_id = os.environ["GOOGLE_EE_PROJECT_ID"]
+    client_email = os.environ["GOOGLE_EE_CLIENT_EMAIL"]
+    private_key = os.environ["GOOGLE_EE_PRIVATE_KEY"].replace("\\n", "\n")
+    info = {
+        "type": "service_account",
+        "project_id": project_id,
+        "private_key": private_key,
+        "client_email": client_email,
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    credentials = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    ee.Initialize(credentials=credentials, project=project_id)
 
 
 def save_aoi(pid: str, geometry, source: str):
@@ -142,6 +163,62 @@ def get_aoi(project_id: str):
     if not aoi.exists():
         raise HTTPException(404, "AOI has not been selected.")
     return json.loads(aoi.read_text())
+
+
+@router.post("/projects/{project_id}/earth-engine/landsat")
+def find_landsat(
+    project_id: str,
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+    max_cloud: float = Form(30),
+):
+    p = project(project_id)
+    if not p.exists():
+        raise HTTPException(404, "Project not found.")
+    aoi_file = p / "aoi.geojson"
+    if not aoi_file.exists():
+        raise HTTPException(400, "Select or upload an AOI first.")
+    if start_date >= end_date:
+        raise HTTPException(400, "End date must be after start date.")
+
+    try:
+        aoi_data = json.loads(aoi_file.read_text())
+        geometry = ee.Geometry(aoi_data["geometry"])
+        initialize_earth_engine()
+
+        collection = (
+            ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+            .filterBounds(geometry)
+            .filterDate(start_date, end_date)
+            .filter(ee.Filter.lte("CLOUD_COVER", max_cloud))
+            .sort("CLOUD_COVER")
+        )
+        count = collection.size().getInfo()
+        images = collection.limit(10).getInfo()["features"]
+
+        candidates = []
+        for item in images:
+            props = item.get("properties", {})
+            candidates.append({
+                "id": item.get("id"),
+                "date": props.get("DATE_ACQUIRED"),
+                "cloud_cover": props.get("CLOUD_COVER"),
+                "scene": props.get("LANDSAT_PRODUCT_ID") or item.get("id"),
+            })
+
+        return {
+            "status": "ok",
+            "project_id": project_id,
+            "collection": "LANDSAT/LC08/C02/T1_L2",
+            "count": count,
+            "candidates": candidates,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "earth_engine": "connected_but_query_failed",
+            "error": str(exc),
+        }
 
 
 @router.post("/projects/{project_id}/upload")
