@@ -21,12 +21,14 @@ export default function App(){
  useEffect(()=>{fetch(API+'/projects',{method:'POST'}).then(r=>r.json()).then(x=>{setProjectId(x.project_id);setStatus('Ready')}).catch(()=>setError('Backend is not reachable. Set VITE_API_URL to your deployed API.'))},[])
 
  async function upload(){
-  if(!projectId||!files?.length)return
-  setError('');setStatus('Uploading…')
-  const fd=new FormData();Array.from(files).forEach(f=>fd.append('files',f))
-  const r=await fetch(API+`/projects/${projectId}/upload`,{method:'POST',body:fd})
-  const x=await r.json();if(!r.ok)throw new Error(x.detail||'Upload failed')
-  setStatus('Input data uploaded')
+  try{
+   if(!projectId||!files?.length)return
+   setError('');setStatus('Uploading…')
+   const fd=new FormData();Array.from(files).forEach(f=>fd.append('files',f))
+   const r=await fetch(API+`/projects/${projectId}/upload`,{method:'POST',body:fd})
+   const x=await r.json();if(!r.ok)throw new Error(x.detail||'Upload failed')
+   setStatus('Input data uploaded')
+  }catch(e){setError(e instanceof Error?e.message:'Upload failed');setStatus('Ready')}
  }
  async function run(){
   try{
