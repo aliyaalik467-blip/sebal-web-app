@@ -1,8 +1,13 @@
 services:
   api:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
     volumes:
       - ./data:/data
       - ./sebal_engine:/sebal_engine
+      - grassdata:/grassdata
+volumes:
+  grassdata:
