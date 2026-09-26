@@ -8,3 +8,4 @@ pyproj
 shapely
 pyshp
 grass-session
+earthengine-api
