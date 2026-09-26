@@ -328,7 +328,11 @@ def prepare_landsat_inputs(
         # Earth Engine getDownloadURL has a ~50 MB request limit. Download the
         # AOI as a small grid of tiles, then mosaic each band locally.
         import urllib.request
+        import ssl
+        import certifi
         from rasterio.merge import merge
+
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
 
         bounds = geometry.bounds().coordinates().getInfo()[0]
         minx = min(p[0] for p in bounds)
@@ -358,7 +362,7 @@ def prepare_landsat_inputs(
                     "crs": crs,
                     "format": "GEO_TIFF",
                 })
-                payload = urllib.request.urlopen(url, timeout=180).read()
+                payload = urllib.request.urlopen(url, timeout=180, context=ssl_context).read()
                 tile_path = input_dir / f"{base_name}_{row}_{col}.tif"
                 tile_path.write_bytes(payload)
 
