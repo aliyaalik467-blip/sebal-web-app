@@ -6,6 +6,7 @@ import './styles.css'
 type Pixel={lat:number;lng:number}
 type LatLngPoint=[number,number]
 type GeoJSONFeature={type:'Feature';properties:Record<string,unknown>;geometry:{type:'Polygon';coordinates:number[][][]}}
+type LandsatCandidate={id:string;date:string|null;cloud_cover:number|null;scene:string}
 
 const API=(import.meta.env.VITE_API_URL||'http://localhost:8000/api').replace(/\/$/,'')
 const icon=new L.Icon({iconUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',iconRetinaUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',iconSize:[25,41],iconAnchor:[12,41]})
@@ -26,6 +27,10 @@ export default function App(){
  const [cold,setCold]=useState<Pixel|null>(null),[hot,setHot]=useState<Pixel|null>(null)
  const [files,setFiles]=useState<FileList|null>(null)
  const [ws,setWs]=useState(''),[etoi,setEtoi]=useState(''),[eto,setEto]=useState('')
+ const [startDate,setStartDate]=useState('2024-01-01'),[endDate,setEndDate]=useState('2025-01-01')
+ const [maxCloud,setMaxCloud]=useState('30')
+ const [landsat,setLandsat]=useState<LandsatCandidate[]>([])
+ const [landsatCount,setLandsatCount]=useState<number|null>(null)
  const [status,setStatus]=useState('Creating project…'),[error,setError]=useState(''),[results,setResults]=useState<string[]>([])
  const select=(p:Pixel)=>mode==='cold'?setCold(p):setHot(p)
 
@@ -57,6 +62,19 @@ export default function App(){
    setStatus('AOI ready')
   }catch(e){setError(e instanceof Error?e.message:'AOI upload failed');setStatus('Ready')}
  }
+ async function searchLandsat(){
+  try{
+   if(!projectId)throw new Error('Project is not ready yet.')
+   if(!aoi)throw new Error('Select or upload an AOI first.')
+   if(!startDate||!endDate)throw new Error('Enter both start and end dates.')
+   setError('');setStatus('Searching Earth Engine…');setLandsat([]);setLandsatCount(null)
+   const fd=new FormData();fd.append('start_date',startDate);fd.append('end_date',endDate);fd.append('max_cloud',maxCloud||'30')
+   const r=await fetch(API+'/projects/'+projectId+'/earth-engine/landsat',{method:'POST',body:fd})
+   const x=await r.json();if(!r.ok)throw new Error(x.detail||'Earth Engine search failed')
+   if(x.status!=='ok')throw new Error(x.error||'Earth Engine search failed')
+   setLandsat(x.candidates||[]);setLandsatCount(x.count??0);setStatus('Earth Engine search complete')
+  }catch(e){setError(e instanceof Error?e.message:'Earth Engine search failed');setStatus('Ready')}
+ }
  async function upload(){
   try{
    if(!projectId||!files?.length)return
@@ -86,17 +104,18 @@ export default function App(){
   {error&&<div className="error">{error}</div>}
   <section className="grid">
    <div className="card"><h2>1. AOI Input</h2><p>Draw an area on the map, or upload a KML / Shapefile ZIP containing .shp, .shx, .dbf and .prj.</p><div className="buttons"><button className={drawMode?'active':''} onClick={startDrawing}>Draw AOI</button>{drawMode&&<button onClick={finishDrawing}>Finish AOI ({drawPoints.length} points)</button>}</div><input type="file" accept=".kml,.zip" onChange={e=>setAoiFile(e.target.files?.[0]||null)}/>{aoiFile&&<><small>{aoiFile.name}</small><button onClick={uploadAoi}>Upload AOI</button></>}{aoiSource&&<div className="success">AOI ready • {aoiSource}</div>}</div>
-   <div className="card"><h2>2. Input data</h2><p>Upload Landsat GeoTIFF bands, the matching MTL.txt file, and MDT_Sebal.tif.</p><input type="file" multiple onChange={e=>setFiles(e.target.files)}/>{files&&<><small>{files.length} file(s) selected</small><button onClick={upload}>Upload to project</button></>}</div>
+   <div className="card"><h2>2. Earth Engine • Landsat</h2><p>Search Landsat 8 Collection 2 Level 2 scenes covering the selected AOI.</p><label>Start date<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label><label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label><label>Maximum cloud cover (%)<input type="number" min="0" max="100" step="1" value={maxCloud} onChange={e=>setMaxCloud(e.target.value)}/></label><button onClick={searchLandsat} disabled={!projectId||!aoi}>Search Landsat</button>{landsatCount!==null&&<div className="success">Found {landsatCount} matching scene(s).</div>}{landsat.length>0&&<div className="outputs">{landsat.map(x=><div key={x.id}><strong>{x.date||'Unknown date'}</strong> • cloud {x.cloud_cover==null?'—':x.cloud_cover.toFixed(1)+'%'}<br/><small>{x.scene}</small></div>)}</div>}</div>
   </section>
   <section className="grid">
-   <div className="card"><h2>3. Weather parameters</h2><label>Wind speed at 2 m (m/s)<input type="number" step="any" value={ws} onChange={e=>setWs(e.target.value)}/></label><label>Instantaneous reference ET (mm)<input type="number" step="any" value={etoi} onChange={e=>setEtoi(e.target.value)}/></label><label>Daily reference ET (mm)<input type="number" step="any" value={eto} onChange={e=>setEto(e.target.value)}/></label></div>
-   <div className="card"><h2>4. Pixel selection</h2><p>When Draw AOI is off, click the map to select Cold or Hot Pixel.</p><div className="buttons"><button className={mode==='cold'?'active':''} onClick={()=>{setDrawMode(false);setMode('cold')}}>Cold Pixel</button><button className={mode==='hot'?'active':''} onClick={()=>{setDrawMode(false);setMode('hot')}}>Hot Pixel</button></div></div>
+   <div className="card"><h2>3. Input data</h2><p>Upload Landsat GeoTIFF bands, the matching MTL.txt file, and MDT_Sebal.tif.</p><input type="file" multiple onChange={e=>setFiles(e.target.files)}/>{files&&<><small>{files.length} file(s) selected</small><button onClick={upload}>Upload to project</button></>}</div>
+   <div className="card"><h2>4. Weather parameters</h2><label>Wind speed at 2 m (m/s)<input type="number" step="any" value={ws} onChange={e=>setWs(e.target.value)}/></label><label>Instantaneous reference ET (mm)<input type="number" step="any" value={etoi} onChange={e=>setEtoi(e.target.value)}/></label><label>Daily reference ET (mm)<input type="number" step="any" value={eto} onChange={e=>setEto(e.target.value)}/></label></div>
   </section>
-  <section className="card"><div className="row"><div><h2>5. Map</h2><p>{drawMode?'Click 3 or more points to draw your AOI, then press Finish AOI.':'Select Cold/Hot Pixel by clicking the map.'}</p></div></div>
+  <section className="card"><h2>5. Pixel selection</h2><p>When Draw AOI is off, click the map to select Cold or Hot Pixel.</p><div className="buttons"><button className={mode==='cold'?'active':''} onClick={()=>{setDrawMode(false);setMode('cold')}}>Cold Pixel</button><button className={mode==='hot'?'active':''} onClick={()=>{setDrawMode(false);setMode('hot')}}>Hot Pixel</button></div></section>
+  <section className="card"><div className="row"><div><h2>6. Map</h2><p>{drawMode?'Click 3 or more points to draw your AOI, then press Finish AOI.':'Select Cold/Hot Pixel by clicking the map.'}</p></div></div>
    <MapContainer center={[24.86,67.01]} zoom={5} className="map"><TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><Picker setPixel={select} drawMode={drawMode} addPoint={addDrawPoint}/>{aoi&&<Polygon positions={aoi}/>} {cold&&<Marker position={cold} icon={icon}/>} {hot&&<Marker position={hot} icon={icon}/>} {drawPoints.length>1&&<Polygon positions={drawPoints}/>}</MapContainer>
    <div className="coords"><span>AOI: {aoi?String(aoi.length-1)+' vertices':'not selected'}</span><span>Cold: {cold?cold.lat.toFixed(6)+', '+cold.lng.toFixed(6):'not selected'}</span><span>Hot: {hot?hot.lat.toFixed(6)+', '+hot.lng.toFixed(6):'not selected'}</span></div>
   </section>
-  <section className="card"><h2>6. Run SEBAL</h2><button className="primary" onClick={run} disabled={!projectId}>Start SEBAL Analysis</button><p className="muted">The AOI is now stored and validated. Earth Engine integration will use this AOI in the next phase.</p></section>
-  <section className="card"><h2>7. Results</h2>{results.length?<div className="outputs">{results.filter(x=>x.endsWith('.tif')).map(x=><a key={x} href={API+'/projects/'+projectId+'/download/'+encodeURIComponent(x)} target="_blank" rel="noreferrer">{x}</a>)}</div>:<p className="muted">Results will appear here after processing.</p>}</section>
+  <section className="card"><h2>7. Run SEBAL</h2><button className="primary" onClick={run} disabled={!projectId}>Start SEBAL Analysis</button><p className="muted">Earth Engine scene search is now available. Actual imagery export into the original SEBAL input format is the next integration step.</p></section>
+  <section className="card"><h2>8. Results</h2>{results.length?<div className="outputs">{results.filter(x=>x.endsWith('.tif')).map(x=><a key={x} href={API+'/projects/'+projectId+'/download/'+encodeURIComponent(x)} target="_blank" rel="noreferrer">{x}</a>)}</div>:<p className="muted">Results will appear here after processing.</p>}</section>
  </main>
 }
