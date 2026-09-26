@@ -336,8 +336,10 @@ def prepare_landsat_inputs(
         miny = min(p[1] for p in bounds)
         maxy = max(p[1] for p in bounds)
 
-        tile_cols = 4
-        tile_rows = 4
+        # Use 8x8 tiles so each multi-band request stays comfortably below
+        # Earth Engine's 50 MB getDownloadURL limit.
+        tile_cols = 8
+        tile_rows = 8
         tile_paths = {band: [] for band in bands + [dem_band]}
 
         for row in range(tile_rows):
