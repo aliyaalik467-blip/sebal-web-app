@@ -8,7 +8,7 @@ type LatLngPoint=[number,number]
 type GeoJSONFeature={type:'Feature';properties:Record<string,unknown>;geometry:{type:'Polygon';coordinates:number[][][]}}
 type LandsatCandidate={id:string;date:string|null;cloud_cover:number|null;scene:string}
 
-const API=(import.meta.env.VITE_API_URL||'http://localhost:8000/api').replace(/\/$/,'')
+const API=(import.meta.env.VITE_API_URL||'https://aliyak.blitz.cloud/api').replace(/\/$/,'')
 const icon=new L.Icon({iconUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',iconRetinaUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',iconSize:[25,41],iconAnchor:[12,41]})
 
 function Picker({setPixel,drawMode,addPoint}:{setPixel:(p:Pixel)=>void;drawMode:boolean;addPoint:(p:LatLngPoint)=>void}){
