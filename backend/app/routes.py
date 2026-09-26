@@ -324,40 +324,100 @@ def prepare_landsat_inputs(
         export_image = l1.select(bands).addBands(dem).clip(geometry)
 
         crs = l1.select("B1").projection().crs().getInfo()
-        url = export_image.getDownloadURL({
-            "name": base_name,
-            "bands": bands + [dem_band],
-            "region": geometry,
-            "scale": 30,
-            "crs": crs,
-            "format": "GEO_TIFF",
-        })
 
+        # Earth Engine getDownloadURL has a ~50 MB request limit. Download the
+        # AOI as a small grid of tiles, then mosaic each band locally.
         import urllib.request
-        payload = urllib.request.urlopen(url, timeout=180).read()
+        from rasterio.merge import merge
 
-        tmp_path = input_dir / f"{base_name}_bundle.tif"
-        tmp_path.write_bytes(payload)
+        bounds = geometry.bounds().coordinates().getInfo()[0]
+        minx = min(p[0] for p in bounds)
+        maxx = max(p[0] for p in bounds)
+        miny = min(p[1] for p in bounds)
+        maxy = max(p[1] for p in bounds)
 
-        with rasterio.open(tmp_path) as src:
-            if src.count != len(bands) + 1:
-                raise ValueError(f"Earth Engine returned {src.count} bands; expected {len(bands) + 1}.")
-            band_names = src.descriptions
-            for index, band in enumerate(bands, start=1):
+        tile_cols = 4
+        tile_rows = 4
+        tile_paths = {band: [] for band in bands + [dem_band]}
+
+        for row in range(tile_rows):
+            y0 = miny + (maxy - miny) * row / tile_rows
+            y1 = miny + (maxy - miny) * (row + 1) / tile_rows
+            for col in range(tile_cols):
+                x0 = minx + (maxx - minx) * col / tile_cols
+                x1 = minx + (maxx - minx) * (col + 1) / tile_cols
+                tile_region = ee.Geometry.Rectangle([x0, y0, x1, y1])
+                tile_image = export_image.clip(tile_region)
+                url = tile_image.getDownloadURL({
+                    "name": f"{base_name}_{row}_{col}",
+                    "bands": bands + [dem_band],
+                    "region": tile_region,
+                    "scale": 30,
+                    "crs": crs,
+                    "format": "GEO_TIFF",
+                })
+                payload = urllib.request.urlopen(url, timeout=180).read()
+                tile_path = input_dir / f"{base_name}_{row}_{col}.tif"
+                tile_path.write_bytes(payload)
+
+                with rasterio.open(tile_path) as src:
+                    if src.count != len(bands) + 1:
+                        raise ValueError(
+                            f"Earth Engine tile returned {src.count} bands; "
+                            f"expected {len(bands) + 1}."
+                        )
+                    for index, band in enumerate(bands + [dem_band], start=1):
+                        band_path = input_dir / f"{base_name}_{row}_{col}_{band}.tif"
+                        profile = src.profile.copy()
+                        profile.update(count=1)
+                        with rasterio.open(band_path, "w", **profile) as dst:
+                            dst.write(src.read(index), 1)
+                            dst.set_band_description(1, band)
+                        tile_paths[band].append(band_path)
+                tile_path.unlink(missing_ok=True)
+
+        for band in bands:
+            sources = [rasterio.open(path) for path in tile_paths[band]]
+            try:
+                mosaic, out_transform = merge(sources)
+                profile = sources[0].profile.copy()
+                profile.update(
+                    driver="GTiff",
+                    height=mosaic.shape[1],
+                    width=mosaic.shape[2],
+                    transform=out_transform,
+                    count=1,
+                )
                 output = input_dir / f"{base_name}_{band}.tif"
-                profile = src.profile.copy()
-                profile.update(count=1)
                 with rasterio.open(output, "w", **profile) as dst:
-                    dst.write(src.read(index), 1)
+                    dst.write(mosaic[0], 1)
                     dst.set_band_description(1, band)
-            dem_output = input_dir / "MDT_Sebal.tif"
-            profile = src.profile.copy()
-            profile.update(count=1)
-            with rasterio.open(dem_output, "w", **profile) as dst:
-                dst.write(src.read(len(bands) + 1), 1)
-                dst.set_band_description(1, dem_band)
+            finally:
+                for src in sources:
+                    src.close()
+                for path in tile_paths[band]:
+                    path.unlink(missing_ok=True)
 
-        tmp_path.unlink(missing_ok=True)
+        dem_sources = [rasterio.open(path) for path in tile_paths[dem_band]]
+        try:
+            mosaic, out_transform = merge(dem_sources)
+            profile = dem_sources[0].profile.copy()
+            profile.update(
+                driver="GTiff",
+                height=mosaic.shape[1],
+                width=mosaic.shape[2],
+                transform=out_transform,
+                count=1,
+            )
+            dem_output = input_dir / "MDT_Sebal.tif"
+            with rasterio.open(dem_output, "w", **profile) as dst:
+                dst.write(mosaic[0], 1)
+                dst.set_band_description(1, dem_band)
+        finally:
+            for src in dem_sources:
+                src.close()
+            for path in tile_paths[dem_band]:
+                path.unlink(missing_ok=True)
         mtl_path = input_dir / f"{base_name}_MTL.txt"
         _write_landsat_mtl(mtl_path, props, acquisition_date)
 
