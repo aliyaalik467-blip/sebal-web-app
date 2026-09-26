@@ -4,3 +4,4 @@ python-multipart
 numpy
 pandas
 rasterio
+grass-session
