@@ -1,4 +1,4 @@
-FROM osgeo/grass:ubuntu-small-latest
+FROM osgeo/grass-gis:8.5.0-ubuntu
 WORKDIR /app
 COPY backend/requirements.txt /app/requirements.txt
 RUN python3 -m pip install --no-cache-dir -r /app/requirements.txt
