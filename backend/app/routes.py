@@ -183,8 +183,8 @@ def find_landsat(
 
     try:
         aoi_data = json.loads(aoi_file.read_text())
-        geometry = ee.Geometry(aoi_data["geometry"])
         initialize_earth_engine()
+        geometry = ee.Geometry(aoi_data["geometry"])
 
         collection = (
             ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
