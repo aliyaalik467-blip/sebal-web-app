@@ -27,6 +27,13 @@ mapset = os.environ.get('GRASS_MAPSET', 'PERMANENT')
 # Finding files and assign local variables
 # path = "/media/rafatieppo/SSD_24gb/QGIS_SEBAL/20170904"
 path = os.environ.get('SEBAL_INPUT_DIR', os.getcwd())
+output_path = os.environ.get('SEBAL_OUTPUT_DIR', path)
+os.makedirs(output_path, exist_ok=True)
+
+def env_or_input(name, prompt):
+    value = os.environ.get(name)
+    return value if value is not None else input(prompt)
+
 # -------------- edition ends here ---------------------------
 
 # ------------------------------------------------------------
@@ -43,19 +50,26 @@ mtlfile = []
 for ifile in allfiles:
     if ifile.endswith("MTL.txt"):
         print(ifile)
-        mtlfile.append(ifile)
+        mtlfile.append(os.path.join(path, ifile))
 
 tiffile = []
 for ifile in allfiles:
-    if ifile.endswith((".tif", ".TIF")) and ifile != 'MDT_Sebal.tif':
+    if ifile.endswith((".tif", ".TIF")) and ifile.lower() != 'mdt_sebal.tif':
         print(ifile)
-        tiffile.append(ifile)
+        tiffile.append(os.path.join(path, ifile))
 
 mdtfile = []
 for ifile in allfiles:
-    if ifile.endswith((".tif", ".TIF")) and ifile == 'MDT_Sebal.tif':
+    if ifile.lower() == 'mdt_sebal.tif':
         print(ifile)
-        mdtfile.append(ifile)
+        mdtfile.append(os.path.join(path, ifile))
+
+if not mtlfile:
+    raise RuntimeError("No Landsat MTL.txt metadata file was found.")
+if not tiffile:
+    raise RuntimeError("No Landsat GeoTIFF files were found.")
+if not mdtfile:
+    raise RuntimeError("MDT_Sebal.tif was not found.")
 
 print("------------------------------------------------------------")
 print("We found \n", len(mtlfile), " .mtl file(s) \n",
@@ -63,18 +77,15 @@ print("We found \n", len(mtlfile), " .mtl file(s) \n",
 print("------------------------------------------------------------")
 
 print("------------------------------------------------------------")
-WS_2m = float(os.environ.get('WS_2M', input(
-    "Please type the wind speed value in the weather station (height of the 2 m (m/s) : "))
+WS_2m = float(env_or_input('WS_2M', "Please type the wind speed value in the weather station (height of the 2 m (m/s) : "))
 print("------------------------------------------------------------")
 
 print("------------------------------------------------------------")
-EToi = float(os.environ.get('ETO_INSTANT', input(
-    "Please type the instantaneous value of reference evapotranspiration (EToi) in the weather station (time of the satellite overpass (mm) : "))
+EToi = float(env_or_input('ETO_INSTANT', "Please type the instantaneous value of reference evapotranspiration (EToi) in the weather station (time of the satellite overpass (mm) : "))
 print("------------------------------------------------------------")
 
 print("------------------------------------------------------------")
-ETo = float(os.environ.get('ETO_DAILY', input(
-    "Please type the daily value of reference evapotranspiration (ETo) from the weather station (mm): "))
+ETo = float(env_or_input('ETO_DAILY', "Please type the daily value of reference evapotranspiration (ETo) from the weather station (mm): "))
 print("------------------------------------------------------------")
 
 # ------------------------------------------------------------
@@ -89,9 +100,12 @@ print("------------------------------------------------------------")
 # ------------------------------------------------------------
 # Spectral radiance
 
-mdtrast_mapset = 'MDT_Sebal@' + mapset 
-gcore.parse_command('g.region', flags='p',
-                    rast=mdtrast_mapset, quiet=True)
+mdt_source = mdtfile[0]
+existing_mdt = gcore.parse_command('g.list', type='raster', pattern='MDT_Sebal')
+if existing_mdt == {}:
+    gcore.run_command('r.in.gdal', input=mdt_source, output='MDT_Sebal', overwrite=True, quiet=True)
+mdtrast_mapset = 'MDT_Sebal@' + mapset
+gcore.parse_command('g.region', flags='p', rast=mdtrast_mapset, quiet=True)
 
 runCC = gcore.parse_command('g.list', type='raster', pattern='CC_432')
 runRLo = gcore.parse_command('g.list', type='raster', pattern='RLo')
@@ -103,19 +117,21 @@ print("Importing images, it can take a while")
 if runCC == {}:
     for i in range(len(tiffile)):
         gcore.parse_command('r.in.gdal', input=tiffile[i],
-                            output=os.path.splitext(tiffile[i])[0],
+                            output=os.path.splitext(os.path.basename(tiffile[i]))[0],
                             overwrite=True)
     print("------------------------------------------------------------")
     print('Top-of-atmosphere reflectance and temperature for Landsat8')
+    first_stem = os.path.splitext(os.path.basename(tiffile[0]))[0]
+    band_group = first_stem.split('_B')[0] + '_B'
     gcore.parse_command('i.landsat.toar',
-                        input=tiffile[0].split('_B')[0] + '_B', output='LS8_corre',
+                        input=band_group, output='LS8_corre',
                         metfile=mtlfile[0], sensor='oli8',
                         overwrite=True)
     # set some common environmental variables, like:
     os.environ.update(dict(GRASS_COMPRESS_NULLS='1',
                            GRASS_COMPRESSOR='ZSTD'))
     gcore.parse_command('g.remove', type='raster',
-                        pattern=tiffile[0].split('_B')[0] + '*',
+                        pattern=first_stem.split('_B')[0] + '*',
                         flags='f')
     print("------------------------------------------------------------")
     print('Image compositionfor landsat 8: Red=B4 Green=B3 Blue=B2')
@@ -339,7 +355,7 @@ print('It is done')
 print("------------------------------------------------------------")
 
 print('Choose the cold pixel coordinates in irrigation areas.')
-COLDPIX_XY = os.environ.get('COLDPIX_XY', str(input('Type the coordinates (East,North): ')).strip('()'))
+COLDPIX_XY = env_or_input('COLDPIX_XY', 'Type the coordinates (East,North): ').strip('()')
 print('Coordinates', COLDPIX_XY)
 
 print('Getting cold pixel value for coordinates')
@@ -436,7 +452,7 @@ print('It is done')
 print("------------------------------------------------------------")
 
 print('Choose the hot pixel coordinates in naked areas.')
-HOTPIX_XY = os.environ.get('HOTPIX_XY', str(input('Type the coordinates (East,North): ')).strip('()'))
+HOTPIX_XY = env_or_input('HOTPIX_XY', 'Type the coordinates (East,North): ').strip('()')
 print('Coordinates', HOTPIX_XY)
 print('Getting hot pixel value for coordinates')
 HOTPIX_TSz = gscript.parse_command('r.what', map='TS', coordinates=HOTPIX_XY)
@@ -743,5 +759,19 @@ gcore.run_command('r.mapcalc', expression="{ETday}={ETof}*{ETo}".format(
     overwrite=True, quiet=True)
 print('It is done')
 print("------------------------------------------------------------")
+export_maps = {
+    'NDVI': 'NDVI', 'SAVI': 'SAVI', 'LAI': 'LAI',
+    'surface_temperature': 'TS', 'albedo': 'AS',
+    'net_radiation': 'Rn', 'soil_heat_flux': 'G',
+    'sensible_heat_flux': 'H', 'latent_heat_flux': 'LHF',
+    'instantaneous_et': 'ETi', 'reference_et_fraction': 'ETof',
+    'daily_et': 'ETday',
+}
+for filename, raster_name in export_maps.items():
+    gcore.run_command('r.out.gdal', input=raster_name,
+        output=os.path.join(output_path, filename + '.tif'),
+        format='GTiff', createopt='COMPRESS=LZW',
+        overwrite=True, quiet=True)
+print("Exported SEBAL outputs to", output_path)
 print("@rafatieppo")
 # ------------------------------------------------------------
