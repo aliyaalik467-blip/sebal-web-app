@@ -31,6 +31,8 @@ export default function App(){
  const [maxCloud,setMaxCloud]=useState('30')
  const [landsat,setLandsat]=useState<LandsatCandidate[]>([])
  const [landsatCount,setLandsatCount]=useState<number|null>(null)
+ const [selectedScene,setSelectedScene]=useState<string|null>(null)
+ const [prepareStatus,setPrepareStatus]=useState('')
  const [status,setStatus]=useState('Creating project…'),[error,setError]=useState(''),[results,setResults]=useState<string[]>([])
  const select=(p:Pixel)=>mode==='cold'?setCold(p):setHot(p)
 
@@ -75,6 +77,18 @@ export default function App(){
    setLandsat(x.candidates||[]);setLandsatCount(x.count??0);setStatus('Earth Engine search complete')
   }catch(e){setError(e instanceof Error?e.message:'Earth Engine search failed');setStatus('Ready')}
  }
+ async function prepareScene(scene:string){
+  try{
+   if(!projectId)throw new Error('Project is not ready yet.')
+   setError('');setSelectedScene(scene);setPrepareStatus('Preparing SEBAL inputs…');setStatus('Downloading selected Landsat scene…')
+   const fd=new FormData();fd.append('scene_id',scene)
+   const r=await fetch(API+'/projects/'+projectId+'/earth-engine/prepare',{method:'POST',body:fd})
+   const x=await r.json();if(!r.ok)throw new Error(x.detail||'Scene preparation failed')
+   if(x.status!=='ok')throw new Error(x.error||'Scene preparation failed')
+   setPrepareStatus('SEBAL inputs ready')
+   setStatus('SEBAL inputs ready')
+  }catch(e){setPrepareStatus('');setError(e instanceof Error?e.message:'Scene preparation failed');setStatus('Ready')}
+ }
  async function upload(){
   try{
    if(!projectId||!files?.length)return
@@ -89,6 +103,7 @@ export default function App(){
   try{
    if(!projectId||!files?.length||!cold||!hot)throw new Error('Upload data and select both cold and hot pixels.')
    if(!ws||!etoi||!eto)throw new Error('Enter all three weather parameters.')
+   if(!prepareStatus)throw new Error('Select a Landsat scene and prepare the SEBAL inputs first.')
    setError('');setStatus('Saving configuration…')
    const fd=new FormData()
    ;[['wind_speed_2m',ws],['eto_instantaneous',etoi],['eto_daily',eto],['cold_lat',String(cold.lat)],['cold_lng',String(cold.lng)],['hot_lat',String(hot.lat)],['hot_lng',String(hot.lng)]].forEach(([k,v])=>fd.append(k,v))
@@ -104,7 +119,7 @@ export default function App(){
   {error&&<div className="error">{error}</div>}
   <section className="grid">
    <div className="card"><h2>1. AOI Input</h2><p>Draw an area on the map, or upload a KML / Shapefile ZIP containing .shp, .shx, .dbf and .prj.</p><div className="buttons"><button className={drawMode?'active':''} onClick={startDrawing}>Draw AOI</button>{drawMode&&<button onClick={finishDrawing}>Finish AOI ({drawPoints.length} points)</button>}</div><input type="file" accept=".kml,.zip" onChange={e=>setAoiFile(e.target.files?.[0]||null)}/>{aoiFile&&<><small>{aoiFile.name}</small><button onClick={uploadAoi}>Upload AOI</button></>}{aoiSource&&<div className="success">AOI ready • {aoiSource}</div>}</div>
-   <div className="card"><h2>2. Earth Engine • Landsat</h2><p>Search Landsat 8 Collection 2 Level 2 scenes covering the selected AOI.</p><label>Start date<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label><label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label><label>Maximum cloud cover (%)<input type="number" min="0" max="100" step="1" value={maxCloud} onChange={e=>setMaxCloud(e.target.value)}/></label><button onClick={searchLandsat} disabled={!projectId||!aoi}>Search Landsat</button>{landsatCount!==null&&<div className="success">Found {landsatCount} matching scene(s).</div>}{landsat.length>0&&<div className="outputs">{landsat.map(x=><div key={x.id}><strong>{x.date||'Unknown date'}</strong> • cloud {x.cloud_cover==null?'—':x.cloud_cover.toFixed(1)+'%'}<br/><small>{x.scene}</small></div>)}</div>}</div>
+   <div className="card"><h2>2. Earth Engine • Landsat</h2><p>Search Landsat 8 Collection 2 Level 2 scenes covering the selected AOI.</p><label>Start date<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label><label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label><label>Maximum cloud cover (%)<input type="number" min="0" max="100" step="1" value={maxCloud} onChange={e=>setMaxCloud(e.target.value)}/></label><button onClick={searchLandsat} disabled={!projectId||!aoi}>Search Landsat</button>{landsatCount!==null&&<div className="success">Found {landsatCount} matching scene(s).</div>{prepareStatus&&<div className="success">{prepareStatus}</div>}}{landsat.length>0&&<div className="outputs">{landsat.map(x=><div key={x.id}><strong>{x.date||'Unknown date'}</strong> • cloud {x.cloud_cover==null?'—':x.cloud_cover.toFixed(1)+'%' }<br/><small>{x.scene}</small><br/><button onClick={()=>prepareScene(x.id)}>{selectedScene===x.id?'Selected / Prepare again':'Select Scene'}</button></div>)}</div>}</div>
   </section>
   <section className="grid">
    <div className="card"><h2>3. Input data</h2><p>Upload Landsat GeoTIFF bands, the matching MTL.txt file, and MDT_Sebal.tif.</p><input type="file" multiple onChange={e=>setFiles(e.target.files)}/>{files&&<><small>{files.length} file(s) selected</small><button onClick={upload}>Upload to project</button></>}</div>
@@ -115,7 +130,7 @@ export default function App(){
    <MapContainer center={[24.86,67.01]} zoom={5} className="map"><TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><Picker setPixel={select} drawMode={drawMode} addPoint={addDrawPoint}/>{aoi&&<Polygon positions={aoi}/>} {cold&&<Marker position={cold} icon={icon}/>} {hot&&<Marker position={hot} icon={icon}/>} {drawPoints.length>1&&<Polygon positions={drawPoints}/>}</MapContainer>
    <div className="coords"><span>AOI: {aoi?String(aoi.length-1)+' vertices':'not selected'}</span><span>Cold: {cold?cold.lat.toFixed(6)+', '+cold.lng.toFixed(6):'not selected'}</span><span>Hot: {hot?hot.lat.toFixed(6)+', '+hot.lng.toFixed(6):'not selected'}</span></div>
   </section>
-  <section className="card"><h2>7. Run SEBAL</h2><button className="primary" onClick={run} disabled={!projectId}>Start SEBAL Analysis</button><p className="muted">Earth Engine scene search is now available. Actual imagery export into the original SEBAL input format is the next integration step.</p></section>
+  <section className="card"><h2>7. Run SEBAL</h2><button className="primary" onClick={run} disabled={!projectId}>Start SEBAL Analysis</button><p className="muted">Select a Landsat scene above to prepare the bands, MTL metadata, and MDT_Sebal input automatically.</p></section>
   <section className="card"><h2>8. Results</h2>{results.length?<div className="outputs">{results.filter(x=>x.endsWith('.tif')).map(x=><a key={x} href={API+'/projects/'+projectId+'/download/'+encodeURIComponent(x)} target="_blank" rel="noreferrer">{x}</a>)}</div>:<p className="muted">Results will appear here after processing.</p>}</section>
  </main>
 }
