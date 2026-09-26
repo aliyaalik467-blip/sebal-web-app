@@ -1,11 +1,18 @@
 from pathlib import Path
+import io
 import json
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 
 import rasterio
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+import shapefile
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.responses import FileResponse
+from pyproj import CRS, Transformer
 from rasterio.warp import transform
+from shapely.geometry import shape, mapping, Polygon
+from shapely.ops import transform as shapely_transform, unary_union
 
 from .runner import run_sebal
 
@@ -18,6 +25,69 @@ def project(pid: str) -> Path:
     return ROOT / pid
 
 
+def save_aoi(pid: str, geometry, source: str):
+    geometry = geometry.buffer(0)
+    if geometry.is_empty or not geometry.is_valid:
+        raise HTTPException(400, "AOI geometry is invalid or empty.")
+    if geometry.geom_type not in ("Polygon", "MultiPolygon"):
+        raise HTTPException(400, "AOI must be a Polygon or MultiPolygon.")
+    geojson = {"type": "Feature", "properties": {"source": source}, "geometry": mapping(geometry)}
+    (project(pid) / "aoi.geojson").write_text(json.dumps(geojson, indent=2))
+    return geojson
+
+
+def parse_kml(data: bytes):
+    root = ET.fromstring(data)
+    polygons = []
+    for elem in root.iter():
+        if elem.tag.split("}")[-1] != "coordinates":
+            continue
+        coords = []
+        for token in (elem.text or "").replace("\n", " ").split():
+            parts = token.split(",")
+            if len(parts) >= 2:
+                coords.append((float(parts[0]), float(parts[1])))
+        if len(coords) >= 4:
+            try:
+                poly = Polygon(coords)
+                if not poly.is_empty:
+                    polygons.append(poly)
+            except ValueError:
+                continue
+    if not polygons:
+        raise HTTPException(400, "No polygon geometry was found in the KML file.")
+    return unary_union(polygons)
+
+
+def parse_shapefile_zip(data: bytes):
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        names = [Path(n).name for n in z.namelist() if not n.endswith("/")]
+        lower = {n.lower() for n in names}
+        required = {".shp", ".shx", ".dbf", ".prj"}
+        if not all(any(n.endswith(ext) for n in lower) for ext in required):
+            raise HTTPException(400, "Shapefile ZIP must contain .shp, .shx, .dbf and .prj files.")
+        shp = next(n for n in names if n.lower().endswith(".shp"))
+        shx = next(n for n in names if n.lower().endswith(".shx"))
+        dbf = next(n for n in names if n.lower().endswith(".dbf"))
+        prj = next(n for n in names if n.lower().endswith(".prj"))
+        reader = shapefile.Reader(
+            shp=io.BytesIO(z.read(shp)),
+            shx=io.BytesIO(z.read(shx)),
+            dbf=io.BytesIO(z.read(dbf)),
+        )
+        geometries = [shape(s.__geo_interface__) for s in reader.shapes() if not shape(s.__geo_interface__).is_empty]
+        if not geometries:
+            raise HTTPException(400, "The Shapefile contains no geometry.")
+        geom = unary_union(geometries)
+        if geom.geom_type not in ("Polygon", "MultiPolygon"):
+            raise HTTPException(400, "AOI Shapefile must contain polygon geometry.")
+        source_crs = CRS.from_wkt(z.read(prj).decode("utf-8", errors="replace"))
+        if source_crs.to_epsg() != 4326:
+            transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+            geom = shapely_transform(transformer.transform, geom)
+        return geom
+
+
 @router.post("/projects")
 def create_project():
     pid = str(uuid.uuid4())
@@ -25,6 +95,53 @@ def create_project():
     (project(pid) / "results").mkdir(parents=True)
     (project(pid) / "status.json").write_text(json.dumps({"status": "created"}))
     return {"project_id": pid, "status": "created"}
+
+
+@router.post("/projects/{project_id}/aoi")
+async def upload_aoi(project_id: str, file: UploadFile = File(...)):
+    p = project(project_id)
+    if not p.exists():
+        raise HTTPException(404, "Project not found.")
+    name = Path(file.filename or "").name
+    data = await file.read()
+    if name.lower().endswith(".kml"):
+        geometry = parse_kml(data)
+        source = "KML"
+    elif name.lower().endswith(".zip"):
+        geometry = parse_shapefile_zip(data)
+        source = "Shapefile ZIP"
+    else:
+        raise HTTPException(400, "AOI must be a .kml file or a ZIP containing .shp, .shx, .dbf and .prj.")
+    return {"project_id": project_id, "aoi": save_aoi(project_id, geometry, source)}
+
+
+@router.post("/projects/{project_id}/aoi/geojson")
+def save_drawn_aoi(project_id: str, feature: dict = Body(...)):
+    p = project(project_id)
+    if not p.exists():
+        raise HTTPException(404, "Project not found.")
+    if feature.get("type") == "Feature":
+        geometry_data = feature.get("geometry")
+    elif feature.get("type") in ("Polygon", "MultiPolygon"):
+        geometry_data = feature
+    else:
+        raise HTTPException(400, "AOI must be a GeoJSON Polygon or MultiPolygon.")
+    try:
+        geometry = shape(geometry_data)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid GeoJSON AOI: {exc}")
+    return {"project_id": project_id, "aoi": save_aoi(project_id, geometry, "Drawn on map")}
+
+
+@router.get("/projects/{project_id}/aoi")
+def get_aoi(project_id: str):
+    p = project(project_id)
+    if not p.exists():
+        raise HTTPException(404, "Project not found.")
+    aoi = p / "aoi.geojson"
+    if not aoi.exists():
+        raise HTTPException(404, "AOI has not been selected.")
+    return json.loads(aoi.read_text())
 
 
 @router.post("/projects/{project_id}/upload")
