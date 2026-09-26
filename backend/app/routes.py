@@ -221,6 +221,164 @@ def find_landsat(
         }
 
 
+
+
+def _landsat_scene_metadata(l1_image):
+    props = l1_image.toDictionary().getInfo()
+    date_value = props.get("DATE_ACQUIRED") or str(props.get("system:time_start", ""))
+    if isinstance(date_value, (int, float)):
+        from datetime import datetime, timezone
+        date_value = datetime.fromtimestamp(date_value / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    return props, str(date_value)[:10]
+
+
+def _mtl_value(props, key, default=None):
+    value = props.get(key, default)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _approx_earth_sun_distance(date_text):
+    from datetime import date
+    import math
+    d = date.fromisoformat(date_text)
+    doy = d.timetuple().tm_yday
+    gamma = 2 * math.pi * (doy - 1) / 365.0
+    return (
+        1.000110
+        + 0.034221 * math.cos(gamma)
+        + 0.001280 * math.sin(gamma)
+        + 0.000719 * math.cos(2 * gamma)
+        + 0.000077 * math.sin(2 * gamma)
+    )
+
+
+def _write_landsat_mtl(path, props, acquisition_date):
+    lines = [
+        "GROUP = LANDSAT_METADATA_FILE",
+        f"  DATE_ACQUIRED = {acquisition_date}",
+        f"  SUN_ELEVATION = {_mtl_value(props, 'SUN_ELEVATION', 45.0)}",
+        f"  EARTH_SUN_DISTANCE = {_mtl_value(props, 'EARTH_SUN_DISTANCE', _approx_earth_sun_distance(acquisition_date))}",
+    ]
+    for band in list(range(1, 8)) + [10]:
+        mult = _mtl_value(props, f"RADIANCE_MULT_BAND_{band}")
+        add = _mtl_value(props, f"RADIANCE_ADD_BAND_{band}")
+        rmult = _mtl_value(props, f"REFLECTANCE_MULT_BAND_{band}")
+        radd = _mtl_value(props, f"REFLECTANCE_ADD_BAND_{band}")
+        if mult is not None and add is not None:
+            lines.append(f"  RADIANCE_MAXIMUM_BAND_{band} = {mult * 65535.0 + add}")
+        if rmult is not None and radd is not None:
+            lines.append(f"  REFLECTANCE_MAXIMUM_BAND_{band} = {rmult * 65535.0 + radd}")
+    lines.extend([
+        "END_GROUP = LANDSAT_METADATA_FILE",
+        "END",
+        "",
+    ])
+    path.write_text("\n".join(lines))
+
+
+@router.post("/projects/{project_id}/earth-engine/prepare")
+def prepare_landsat_inputs(
+    project_id: str,
+    scene_id: str = Form(...),
+):
+    p = project(project_id)
+    if not p.exists():
+        raise HTTPException(404, "Project not found.")
+    aoi_file = p / "aoi.geojson"
+    if not aoi_file.exists():
+        raise HTTPException(400, "Select or upload an AOI first.")
+
+    try:
+        initialize_earth_engine()
+        aoi_data = json.loads(aoi_file.read_text())
+        geometry = ee.Geometry(aoi_data["geometry"])
+
+        l2 = ee.Image(scene_id)
+        l2_props = l2.toDictionary(["LANDSAT_SCENE_ID", "DATE_ACQUIRED", "TARGET_WRS_PATH", "TARGET_WRS_ROW"]).getInfo()
+        scene_key = l2_props.get("LANDSAT_SCENE_ID")
+        if not scene_key:
+            raise ValueError("The selected Earth Engine scene does not contain LANDSAT_SCENE_ID metadata.")
+
+        l1_collection = (
+            ee.ImageCollection("LANDSAT/LC08/C02/T1")
+            .filter(ee.Filter.eq("LANDSAT_SCENE_ID", scene_key))
+        )
+        l1 = ee.Image(l1_collection.first())
+        l1_id = l1.get("system:id").getInfo()
+        if not l1_id:
+            raise ValueError("Matching Landsat Collection 2 Level-1 scene was not found.")
+
+        props, acquisition_date = _landsat_scene_metadata(l1)
+        base_name = Path(l1_id).name
+        input_dir = p / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+
+        bands = [f"B{i}" for i in range(1, 8)] + ["B10"]
+        dem_band = "MDT_Sebal"
+        dem = ee.Image("USGS/SRTMGL1_003").select("elevation").rename(dem_band)
+        export_image = l1.select(bands).addBands(dem).clip(geometry)
+
+        crs = l1.select("B1").projection().crs().getInfo()
+        url = export_image.getDownloadURL({
+            "name": base_name,
+            "bands": bands + [dem_band],
+            "region": geometry,
+            "scale": 30,
+            "crs": crs,
+            "format": "GEO_TIFF",
+        })
+
+        import urllib.request
+        payload = urllib.request.urlopen(url, timeout=180).read()
+
+        tmp_path = input_dir / f"{base_name}_bundle.tif"
+        tmp_path.write_bytes(payload)
+
+        with rasterio.open(tmp_path) as src:
+            if src.count != len(bands) + 1:
+                raise ValueError(f"Earth Engine returned {src.count} bands; expected {len(bands) + 1}.")
+            band_names = src.descriptions
+            for index, band in enumerate(bands, start=1):
+                output = input_dir / f"{base_name}_{band}.tif"
+                profile = src.profile.copy()
+                profile.update(count=1)
+                with rasterio.open(output, "w", **profile) as dst:
+                    dst.write(src.read(index), 1)
+                    dst.set_band_description(1, band)
+            dem_output = input_dir / "MDT_Sebal.tif"
+            profile = src.profile.copy()
+            profile.update(count=1)
+            with rasterio.open(dem_output, "w", **profile) as dst:
+                dst.write(src.read(len(bands) + 1), 1)
+                dst.set_band_description(1, dem_band)
+
+        tmp_path.unlink(missing_ok=True)
+        mtl_path = input_dir / f"{base_name}_MTL.txt"
+        _write_landsat_mtl(mtl_path, props, acquisition_date)
+
+        manifest = {
+            "status": "ok",
+            "project_id": project_id,
+            "selected_l2_scene": scene_id,
+            "landsat_level1_scene": l1_id,
+            "date": acquisition_date,
+            "files": [f"{base_name}_{band}.tif" for band in bands] + ["MDT_Sebal.tif", mtl_path.name],
+        }
+        (p / "landsat_selection.json").write_text(json.dumps(manifest, indent=2))
+        return manifest
+    except Exception as exc:
+        return {
+            "status": "error",
+            "earth_engine": "connected_but_prepare_failed",
+            "error": str(exc),
+        }
+
+
 @router.post("/projects/{project_id}/upload")
 async def upload(project_id: str, files: list[UploadFile] = File(...)):
     base = project(project_id) / "input"
